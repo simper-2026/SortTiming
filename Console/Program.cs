@@ -4,6 +4,13 @@ namespace SortTiming;
 
 class Program
 {
+    // Run each test multiple times for statistical accuracy
+    // - Warmup runs allow JIT compilation and cache warming (results discarded)
+    // - Multiple measured runs smooth out system variance (CPU scheduling, background tasks)
+    // - Statistical measures (mean, min, max, std dev) provide reliability information
+    private const int WarmupRuns = 1;
+    private const int MeasuredRuns = 5;
+    
     private const int DefaultTimeoutSeconds = 30;
     
     static void Main(string[] args)
@@ -41,7 +48,7 @@ class Program
         
         if (algorithms.Count == 0)
         {
-            Console.WriteLine("No sorting algorithms added yet.");
+            Console.WriteLine("** No sorting algorithms added yet. **");
             Console.WriteLine("Create classes that implement ISortingAlgorithm and add them to the algorithms list.");
             return;
         }
@@ -66,31 +73,47 @@ class Program
             
             Console.WriteLine("[REVERSE SORTED ARRAY]");
             var reverseResult = TimeSort(algorithm, reverseArray, timeoutSeconds);
-            reverseResult.ArrayType = "Reverse";
+            reverseResult.ArrayType = "Reversed";
             results.Add(reverseResult);
         }
         
-        Console.WriteLine("\n" + new string('=', 85));
+        Console.WriteLine("\n" + new string('=', 130));
         Console.WriteLine("SUMMARY");
-        Console.WriteLine(new string('=', 85));
-        Console.WriteLine($"{"Algorithm",-30} {"Random",15} {"Sorted",15} {"Reverse",15}");
-        Console.WriteLine(new string('-', 85));
+        Console.WriteLine(new string('=', 130));
+        Console.WriteLine($"{"Algorithm",-20} {"Array Type",-12} {"Mean (ms)",12} {"Min (ms)",12} {"Max (ms)",12} {"StdDev (ms)",14} {"Status",10}");
+        Console.WriteLine(new string('-', 130));
         
         foreach (var algorithmGroup in results.GroupBy(r => r.Algorithm))
         {
             var algorithmResults = algorithmGroup.ToList();
-            var randomResult = algorithmResults.FirstOrDefault(r => r.ArrayType == "Random");
-            var sortedResult = algorithmResults.FirstOrDefault(r => r.ArrayType == "Sorted");
-            var reverseResult = algorithmResults.FirstOrDefault(r => r.ArrayType == "Reverse");
+            bool firstRow = true;
             
-            string randomDisplay = FormatResult(randomResult.Milliseconds, randomResult.Status);
-            string sortedDisplay = FormatResult(sortedResult.Milliseconds, sortedResult.Status);
-            string reverseDisplay = FormatResult(reverseResult.Milliseconds, reverseResult.Status);
+            foreach (var result in algorithmResults.OrderBy(r => r.ArrayType))
+            {
+                string algorithmName = firstRow ? algorithmGroup.Key : "";
+                firstRow = false;
+                
+                string statusDisplay = result.Status == "PASSED" ? "✓" : 
+                                     result.Status == "FAILED" ? "✗ FAILED" :
+                                     result.Status;
+                
+                if (result.Status == "TIMEOUT" || result.Status == "ERROR")
+                {
+                    Console.WriteLine($"{algorithmName,-20} {result.ArrayType,-12} {"-",12} {"-",12} {"-",12} {"-",14} {statusDisplay,10}");
+                }
+                else
+                {
+                    Console.WriteLine($"{algorithmName,-20} {result.ArrayType,-12} {result.MeanMilliseconds,12} {result.MinMilliseconds,12} {result.MaxMilliseconds,12} {result.StdDevMilliseconds,14:F2} {statusDisplay,10}");
+                }
+            }
             
-            Console.WriteLine($"{algorithmGroup.Key,-30} {randomDisplay,15} {sortedDisplay,15} {reverseDisplay,15}");
+            if (algorithmResults.Count > 0)
+            {
+                Console.WriteLine(new string('-', 130));
+            }
         }
         
-        Console.WriteLine(new string('=', 85));
+        Console.WriteLine(new string('=', 130));
     }
     
     static string FormatResult(long milliseconds, string status)
@@ -115,88 +138,131 @@ class Program
     
     static SortResult TimeSort(ISortingAlgorithm algorithm, int[] array, int timeoutSeconds)
     {
-        // Create a copy to preserve original array
-        int[] arrayCopy = (int[])array.Clone();
+        Console.WriteLine($"Running {WarmupRuns} warmup + {MeasuredRuns} measured iterations...");
         
-        Console.Write("Sorting... ");
+        var measuredTimes = new List<long>();
+        bool isSorted = true;
         
-        using var cts = new CancellationTokenSource();
-        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+        int totalRuns = WarmupRuns + MeasuredRuns;
         
-        Stopwatch stopwatch = Stopwatch.StartNew();
-        bool completed = false;
-        bool timedOut = false;
-        Exception? exception = null;
-        
-        var sortTask = Task.Run(() =>
+        for (int run = 0; run < totalRuns; run++)
         {
-            try
+            // Create a fresh copy for each run
+            int[] arrayCopy = (int[])array.Clone();
+            
+            bool isWarmup = run < WarmupRuns;
+            Console.Write($"  {(isWarmup ? "Warmup" : "Run")} {(isWarmup ? run + 1 : run - WarmupRuns + 1)}: ");
+            
+            using var cts = new CancellationTokenSource();
+            cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+            
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            bool timedOut = false;
+            Exception? exception = null;
+            
+            // The stack had to be increased to handle deep recursion
+            Thread sortThread = new Thread(() =>
             {
-                algorithm.Sort(arrayCopy);
-                completed = true;
-            }
-            catch (OperationCanceledException)
-            {
-                timedOut = true;
-            }
-            catch (Exception ex)
-            {
-                exception = ex;
-            }
-        }, cts.Token);
-        
-        try
-        {
-            sortTask.Wait(cts.Token);
-        }
-        catch (AggregateException ae)
-        {
-            foreach (var ex in ae.InnerExceptions)
-            {
-                if (ex is not OperationCanceledException)
+                try
+                {
+                    algorithm.Sort(arrayCopy);
+                }
+                catch (Exception ex)
                 {
                     exception = ex;
                 }
+            }, 16 * 1024 * 1024); // 16 MB stack (default is 1 MB)
+            
+            sortThread.Start();
+            
+            if (!sortThread.Join(TimeSpan.FromSeconds(timeoutSeconds)))
+            {
+                timedOut = true;
+                sortThread.Interrupt();
+                // Give thread a moment to stop, but don't wait forever
+                sortThread.Join(100);
+            }
+            
+            stopwatch.Stop();
+            long elapsedMs = stopwatch.ElapsedMilliseconds;
+            
+            if (exception != null)
+            {
+                Console.WriteLine($"EXCEPTION after {elapsedMs} ms");
+                Console.WriteLine($"Error: {exception.GetType().Name}");
+                if (exception.Message.Length < 200)
+                {
+                    Console.WriteLine($"Message: {exception.Message}");
+                }
                 else
                 {
-                    timedOut = true;
+                    Console.WriteLine($"Message: {exception.Message.Substring(0, 197)}...");
                 }
+                Console.WriteLine($"Status: ERROR ✗\n");
+                
+                // Record the error time for this run but continue to avoid crash
+                if (!isWarmup)
+                {
+                    measuredTimes.Add(elapsedMs);
+                }
+                
+                // If this is an early failure, still return error result
+                if (run < 2)
+                {
+                    return new SortResult(algorithm.Name, "", "ERROR");
+                }
+                // Otherwise break out of the loop to report partial results
+                break;
             }
-        }
-        catch (OperationCanceledException)
-        {
-            timedOut = true;
-        }
-        
-        stopwatch.Stop();
-        long elapsedMs = stopwatch.ElapsedMilliseconds;
-        
-        if (exception != null)
-        {
-            Console.WriteLine($"EXCEPTION after {elapsedMs} ms");
-            Console.WriteLine($"Error: {exception.GetType().Name}");
-            if (exception.Message.Length < 100)
+            
+            if (timedOut)
             {
-                Console.WriteLine($"Message: {exception.Message}");
+                Console.WriteLine($"TIMED OUT after {elapsedMs} ms ({stopwatch.Elapsed.TotalSeconds:F3} seconds)");
+                Console.WriteLine($"Status: TIMEOUT ⏱\n");
+                return new SortResult(algorithm.Name, "", "TIMEOUT");
             }
-            Console.WriteLine($"Status: ERROR ✗\n");
-            return new SortResult(algorithm.Name, "", elapsedMs, "ERROR");
+            
+            Console.WriteLine($"{elapsedMs} ms");
+            
+            // Verify correctness (only need to check once, but check last measured run)
+            if (run == totalRuns - 1)
+            {
+                isSorted = VerifySorted(arrayCopy);
+            }
+            
+            // Only record times for measured runs (skip warmup)
+            if (!isWarmup)
+            {
+                measuredTimes.Add(elapsedMs);
+            }
         }
         
-        if (timedOut)
+        // Handle case where we had errors but got some measurements
+        if (measuredTimes.Count == 0)
         {
-            Console.WriteLine($"TIMED OUT after {elapsedMs} ms ({stopwatch.Elapsed.TotalSeconds:F3} seconds)");
-            Console.WriteLine($"Status: TIMEOUT ⏱\n");
-            return new SortResult(algorithm.Name, "", elapsedMs, "TIMEOUT");
+            return new SortResult(algorithm.Name, "", "ERROR");
         }
         
-        Console.WriteLine($"completed in {elapsedMs} ms ({stopwatch.Elapsed.TotalSeconds:F3} seconds)");
+        var retval = new SortResult(algorithm.Name, "", "");
+        retval.MinMilliseconds = measuredTimes.Min();
+        retval.MaxMilliseconds = measuredTimes.Max();   
+        retval.MeanMilliseconds = (long)measuredTimes.Average();
+        retval.StdDevMilliseconds = CalculateStdDev(measuredTimes);
         
-        bool isSorted = VerifySorted(arrayCopy);
         string status = isSorted ? "PASSED" : "FAILED";
+        Console.WriteLine($"\nStatistics: Mean={retval.MeanMilliseconds}ms, Min={retval.MinMilliseconds}ms, Max={retval.MaxMilliseconds}ms, StdDev={retval.StdDevMilliseconds:F2}ms");
         Console.WriteLine($"Verification: {(isSorted ? "PASSED ✓" : "FAILED ✗")}\n");
         
-        return new SortResult(algorithm.Name, "", elapsedMs, status);
+        return retval;
+    }
+    
+    static double CalculateStdDev(List<long> values)
+    {
+        if (values.Count <= 1) return 0;
+        
+        double mean = values.Average();
+        double sumSquaredDiffs = values.Sum(v => Math.Pow(v - mean, 2));
+        return Math.Sqrt(sumSquaredDiffs / values.Count);
     }
     
     static bool VerifySorted(int[] array)
