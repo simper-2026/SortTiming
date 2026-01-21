@@ -116,26 +116,6 @@ class Program
         Console.WriteLine(new string('=', 130));
     }
     
-    static string FormatResult(long milliseconds, string status)
-    {
-        if (status == "TIMEOUT")
-        {
-            return "TIMEOUT";
-        }
-        else if (status == "ERROR")
-        {
-            return "ERROR";
-        }
-        else if (status == "FAILED")
-        {
-            return $"{milliseconds} ms (!)";
-        }
-        else
-        {
-            return $"{milliseconds} ms";
-        }
-    }
-    
     static SortResult TimeSort(ISortingAlgorithm algorithm, int[] array, int timeoutSeconds)
     {
         Console.WriteLine($"Running {WarmupRuns} warmup + {MeasuredRuns} measured iterations...");
