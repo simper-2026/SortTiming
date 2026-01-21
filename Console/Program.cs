@@ -4,7 +4,6 @@ namespace SortTiming;
 
 class Program
 {
-    // Default timeout in seconds (can be configured)
     private const int DefaultTimeoutSeconds = 30;
     
     static void Main(string[] args)
@@ -12,7 +11,6 @@ class Program
         Console.WriteLine("Sorting Algorithm Performance Tester");
         Console.WriteLine("====================================");
         
-        // Get array size from user
         Console.Write("Enter array size: ");
         if (!int.TryParse(Console.ReadLine(), out int size) || size <= 0)
         {
@@ -20,27 +18,25 @@ class Program
             size = 10000;
         }
         
-        // Get timeout from user
         Console.Write($"Enter timeout in seconds (default {DefaultTimeoutSeconds}): ");
         if (!int.TryParse(Console.ReadLine(), out int timeoutSeconds) || timeoutSeconds <= 0)
         {
             timeoutSeconds = DefaultTimeoutSeconds;
         }
         
-        // Generate random array
-        int[] array = GenerateRandomArray(size);
-        Console.WriteLine($"\nGenerated random array of {size} elements");
+        var randomArray = DataGenerator.GenerateRandomArray(size);
+        var sortedArray = DataGenerator.GenerateSortedArray(size);
+        var reverseArray = DataGenerator.GenerateReverseSortedArray(size);
+        
+        Console.WriteLine($"\nGenerated test arrays of {size} elements");
         Console.WriteLine($"Timeout: {timeoutSeconds} seconds\n");
         
         // Add your sorting algorithm implementations here
         List<ISortingAlgorithm> algorithms = new List<ISortingAlgorithm>
         {
-            //new NotSort(),
-            // new RandomSort(),
             // new BubbleSort(),
-            // new QuickSort(),
             // new MergeSort(),
-            // Add more algorithms as needed
+            // new QuickSort(),
         };
         
         if (algorithms.Count == 0)
@@ -50,48 +46,78 @@ class Program
             return;
         }
         
-        // Test each algorithm on the same array
-        var results = new List<(string Name, long Milliseconds, string Status)>();
+        var results = new List<SortResult>();
         
         foreach (var algorithm in algorithms)
         {
-            var result = TimeSort(algorithm, array, timeoutSeconds);
-            results.Add(result);
+            Console.WriteLine($"\n{'='*60}");
+            Console.WriteLine($"Algorithm: {algorithm.Name}");
+            Console.WriteLine($"{'='*60}\n");
+            
+            Console.WriteLine("[RANDOM ARRAY]");
+            var randomResult = TimeSort(algorithm, randomArray, timeoutSeconds);
+            randomResult.ArrayType = "Random";
+            results.Add(randomResult);
+            
+            Console.WriteLine("[SORTED ARRAY]");
+            var sortedResult = TimeSort(algorithm, sortedArray, timeoutSeconds);
+            sortedResult.ArrayType = "Sorted";
+            results.Add(sortedResult);
+            
+            Console.WriteLine("[REVERSE SORTED ARRAY]");
+            var reverseResult = TimeSort(algorithm, reverseArray, timeoutSeconds);
+            reverseResult.ArrayType = "Reverse";
+            results.Add(reverseResult);
         }
         
-        // Display summary
-        Console.WriteLine("\n===========================================");
+        Console.WriteLine("\n" + new string('=', 85));
         Console.WriteLine("SUMMARY");
-        Console.WriteLine("===========================================");
-        Console.WriteLine($"{"Algorithm",-30} {"Time (ms)",12} {"Status",12}");
-        Console.WriteLine(new string('-', 57));
+        Console.WriteLine(new string('=', 85));
+        Console.WriteLine($"{"Algorithm",-30} {"Random",15} {"Sorted",15} {"Reverse",15}");
+        Console.WriteLine(new string('-', 85));
         
-        foreach (var result in results.OrderBy(r => r.Milliseconds))
+        foreach (var algorithmGroup in results.GroupBy(r => r.Algorithm))
         {
-            string timeDisplay = result.Milliseconds >= 0 ? result.Milliseconds.ToString() : "--";
-            Console.WriteLine($"{result.Name,-30} {timeDisplay,12} {result.Status,12}");
+            var algorithmResults = algorithmGroup.ToList();
+            var randomResult = algorithmResults.FirstOrDefault(r => r.ArrayType == "Random");
+            var sortedResult = algorithmResults.FirstOrDefault(r => r.ArrayType == "Sorted");
+            var reverseResult = algorithmResults.FirstOrDefault(r => r.ArrayType == "Reverse");
+            
+            string randomDisplay = FormatResult(randomResult.Milliseconds, randomResult.Status);
+            string sortedDisplay = FormatResult(sortedResult.Milliseconds, sortedResult.Status);
+            string reverseDisplay = FormatResult(reverseResult.Milliseconds, reverseResult.Status);
+            
+            Console.WriteLine($"{algorithmGroup.Key,-30} {randomDisplay,15} {sortedDisplay,15} {reverseDisplay,15}");
         }
+        
+        Console.WriteLine(new string('=', 85));
     }
     
-    static int[] GenerateRandomArray(int size)
+    static string FormatResult(long milliseconds, string status)
     {
-        Random random = new Random();
-        int[] array = new int[size];
-        
-        for (int i = 0; i < size; i++)
+        if (status == "TIMEOUT")
         {
-            array[i] = random.Next(0, size * 10);
+            return "TIMEOUT";
         }
-        
-        return array;
+        else if (status == "ERROR")
+        {
+            return "ERROR";
+        }
+        else if (status == "FAILED")
+        {
+            return $"{milliseconds} ms (!)";
+        }
+        else
+        {
+            return $"{milliseconds} ms";
+        }
     }
     
-    static (string Name, long Milliseconds, string Status) TimeSort(ISortingAlgorithm algorithm, int[] array, int timeoutSeconds)
+    static SortResult TimeSort(ISortingAlgorithm algorithm, int[] array, int timeoutSeconds)
     {
         // Create a copy to preserve original array
         int[] arrayCopy = (int[])array.Clone();
         
-        Console.WriteLine($"Testing: {algorithm.Name}");
         Console.Write("Sorting... ");
         
         using var cts = new CancellationTokenSource();
@@ -100,6 +126,7 @@ class Program
         Stopwatch stopwatch = Stopwatch.StartNew();
         bool completed = false;
         bool timedOut = false;
+        Exception? exception = null;
         
         var sortTask = Task.Run(() =>
         {
@@ -112,11 +139,29 @@ class Program
             {
                 timedOut = true;
             }
+            catch (Exception ex)
+            {
+                exception = ex;
+            }
         }, cts.Token);
         
         try
         {
             sortTask.Wait(cts.Token);
+        }
+        catch (AggregateException ae)
+        {
+            foreach (var ex in ae.InnerExceptions)
+            {
+                if (ex is not OperationCanceledException)
+                {
+                    exception = ex;
+                }
+                else
+                {
+                    timedOut = true;
+                }
+            }
         }
         catch (OperationCanceledException)
         {
@@ -126,21 +171,32 @@ class Program
         stopwatch.Stop();
         long elapsedMs = stopwatch.ElapsedMilliseconds;
         
+        if (exception != null)
+        {
+            Console.WriteLine($"EXCEPTION after {elapsedMs} ms");
+            Console.WriteLine($"Error: {exception.GetType().Name}");
+            if (exception.Message.Length < 100)
+            {
+                Console.WriteLine($"Message: {exception.Message}");
+            }
+            Console.WriteLine($"Status: ERROR ✗\n");
+            return new SortResult(algorithm.Name, "", elapsedMs, "ERROR");
+        }
+        
         if (timedOut)
         {
             Console.WriteLine($"TIMED OUT after {elapsedMs} ms ({stopwatch.Elapsed.TotalSeconds:F3} seconds)");
             Console.WriteLine($"Status: TIMEOUT ⏱\n");
-            return (algorithm.Name, elapsedMs, "TIMEOUT");
+            return new SortResult(algorithm.Name, "", elapsedMs, "TIMEOUT");
         }
         
         Console.WriteLine($"completed in {elapsedMs} ms ({stopwatch.Elapsed.TotalSeconds:F3} seconds)");
         
-        // Verify array is sorted
         bool isSorted = VerifySorted(arrayCopy);
         string status = isSorted ? "PASSED" : "FAILED";
         Console.WriteLine($"Verification: {(isSorted ? "PASSED ✓" : "FAILED ✗")}\n");
         
-        return (algorithm.Name, elapsedMs, status);
+        return new SortResult(algorithm.Name, "", elapsedMs, status);
     }
     
     static bool VerifySorted(int[] array)
